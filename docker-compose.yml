@@ -1,0 +1,124 @@
+version: '3.9'
+
+services:
+
+  # ── MySQL ──────────────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.2
+    container_name: dfs-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_secret
+      MYSQL_DATABASE:      dfs_db
+      MYSQL_USER:          dfs_user
+      MYSQL_PASSWORD:      dfs_secret
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./gateway-server/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "dfs_user", "-pdfs_secret"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Gateway Server ─────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: ./gateway-server
+      dockerfile: Dockerfile
+    container_name: dfs-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/dfs_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: dfs_user
+      SPRING_DATASOURCE_PASSWORD: dfs_secret
+      JWT_SECRET: "dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm"
+      STORAGE_NODES_0_ID:  node-1
+      STORAGE_NODES_0_URL: http://node1:8081
+      STORAGE_NODES_0_ZONE: zone-a
+      STORAGE_NODES_1_ID:  node-2
+      STORAGE_NODES_1_URL: http://node2:8082
+      STORAGE_NODES_1_ZONE: zone-b
+      STORAGE_NODES_2_ID:  node-3
+      STORAGE_NODES_2_URL: http://node3:8083
+      STORAGE_NODES_2_ZONE: zone-c
+    depends_on:
+      mysql:
+        condition: service_healthy
+      node1:
+        condition: service_started
+      node2:
+        condition: service_started
+
+  # ── Storage Node 1 ─────────────────────────────────────────────────────────
+  node1:
+    build:
+      context: ./storage-node
+      dockerfile: Dockerfile
+    container_name: dfs-node1
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT:       8081
+      NODE_ID:           node-1
+      NODE_ZONE:         zone-a
+      NODE_STORAGE_ROOT: /data/chunks
+      NODE_TOTAL_CAPACITY: 107374182400
+      JWT_SECRET: "dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm"
+    volumes:
+      - node1_data:/data/chunks
+
+  # ── Storage Node 2 ─────────────────────────────────────────────────────────
+  node2:
+    build:
+      context: ./storage-node
+      dockerfile: Dockerfile
+    container_name: dfs-node2
+    ports:
+      - "8082:8081"
+    environment:
+      SERVER_PORT:       8081
+      NODE_ID:           node-2
+      NODE_ZONE:         zone-b
+      NODE_STORAGE_ROOT: /data/chunks
+      NODE_TOTAL_CAPACITY: 107374182400
+      JWT_SECRET: "dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm"
+    volumes:
+      - node2_data:/data/chunks
+
+  # ── Storage Node 3 ─────────────────────────────────────────────────────────
+  node3:
+    build:
+      context: ./storage-node
+      dockerfile: Dockerfile
+    container_name: dfs-node3
+    ports:
+      - "8083:8081"
+    environment:
+      SERVER_PORT:       8081
+      NODE_ID:           node-3
+      NODE_ZONE:         zone-c
+      NODE_STORAGE_ROOT: /data/chunks
+      NODE_TOTAL_CAPACITY: 107374182400
+      JWT_SECRET: "dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm"
+    volumes:
+      - node3_data:/data/chunks
+
+  # ── React Frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dfs-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+
+volumes:
+  mysql_data:
+  node1_data:
+  node2_data:
+  node3_data:

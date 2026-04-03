@@ -1,0 +1,80 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: dfs-gateway
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  # ── Google OAuth2 ────────────────────────────────────────────────────────────
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - email
+              - profile
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+
+# JWT
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: 86400000
+
+# Storage Nodes — set via env vars on Render
+storage:
+  nodes:
+    - id: "node-1"
+      url: ${NODE_1_URL:http://localhost:8081}
+      zone: "zone-a"
+    - id: "node-2"
+      url: ${NODE_2_URL:http://localhost:8082}
+      zone: "zone-b"
+    - id: "node-3"
+      url: ${NODE_3_URL:http://localhost:8083}
+      zone: "zone-c"
+  replication-factor: 2
+  chunk-size-bytes: 1048576
+  health-check-interval: 30000
+  node-timeout: 5000
+
+file:
+  soft-delete:
+    retention-days: 30
+
+# CORS — allow the deployed frontend URL
+app:
+  cors:
+    allowed-origins: ${FRONTEND_URL:http://localhost:3000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.dfs: INFO
+    org.springframework.security: WARN

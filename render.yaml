@@ -1,0 +1,110 @@
+databases:
+  - name: dfs-mysql
+    databaseName: dfs_db
+    user: dfs_user
+    plan: free
+
+services:
+
+  # ── Gateway Server ────────────────────────────────────────────────────────
+  - type: web
+    name: dfs-gateway
+    runtime: java
+    plan: free
+    buildCommand: cd gateway-server && mvn clean package -DskipTests
+    startCommand: java -jar gateway-server/target/gateway-server-1.0.0.jar
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: DB_URL
+        fromDatabase:
+          name: dfs-mysql
+          property: connectionString
+      - key: DB_USERNAME
+        fromDatabase:
+          name: dfs-mysql
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: dfs-mysql
+          property: password
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false          # you paste this in Render dashboard
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false          # you paste this in Render dashboard
+      - key: FRONTEND_URL
+        sync: false          # paste your frontend Render URL after first deploy
+      - key: NODE_1_URL
+        sync: false          # paste storage-node-1 Render URL
+      - key: NODE_2_URL
+        sync: false          # paste storage-node-2 Render URL
+
+  # ── Storage Node 1 ────────────────────────────────────────────────────────
+  - type: web
+    name: dfs-node-1
+    runtime: java
+    plan: free
+    buildCommand: cd storage-node && mvn clean package -DskipTests
+    startCommand: java -jar storage-node/target/storage-node-1.0.0.jar
+    healthCheckPath: /actuator/health
+    disk:
+      name: node1-storage
+      mountPath: /data/dfs/node-1
+      sizeGB: 1
+    envVars:
+      - key: SERVER_PORT
+        value: "10000"
+      - key: NODE_ID
+        value: node-1
+      - key: NODE_ZONE
+        value: zone-a
+      - key: NODE_STORAGE_ROOT
+        value: /data/dfs/node-1
+      - key: JWT_SECRET
+        fromService:
+          name: dfs-gateway
+          type: web
+          envVarKey: JWT_SECRET
+
+  # ── Storage Node 2 ────────────────────────────────────────────────────────
+  - type: web
+    name: dfs-node-2
+    runtime: java
+    plan: free
+    buildCommand: cd storage-node && mvn clean package -DskipTests
+    startCommand: java -Dspring.profiles.active=node2 -jar storage-node/target/storage-node-1.0.0.jar
+    healthCheckPath: /actuator/health
+    disk:
+      name: node2-storage
+      mountPath: /data/dfs/node-2
+      sizeGB: 1
+    envVars:
+      - key: SERVER_PORT
+        value: "10000"
+      - key: NODE_ID
+        value: node-2
+      - key: NODE_ZONE
+        value: zone-b
+      - key: NODE_STORAGE_ROOT
+        value: /data/dfs/node-2
+      - key: JWT_SECRET
+        fromService:
+          name: dfs-gateway
+          type: web
+          envVarKey: JWT_SECRET
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  - type: web
+    name: dfs-frontend
+    runtime: static
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        sync: false          # paste your gateway Render URL

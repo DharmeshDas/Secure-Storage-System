@@ -1,0 +1,67 @@
+# ── Default / Node 1 ──────────────────────────────────────────────────────────
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: ${NODE_ID:dfs-storage-node-1}
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+jwt:
+  secret: ${JWT_SECRET:dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm}
+
+node:
+  id:            ${NODE_ID:node-1}
+  zone:          ${NODE_ZONE:zone-a}
+  storage-root:  ${NODE_STORAGE_ROOT:/data/dfs/node-1}
+  total-capacity: 1073741824   # 1 GB (Render free disk)
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.dfs.node: INFO
+
+---
+# ── Node 2 profile ─────────────────────────────────────────────────────────────
+spring:
+  config:
+    activate:
+      on-profile: node2
+  application:
+    name: dfs-storage-node-2
+
+server:
+  port: ${SERVER_PORT:8082}
+
+node:
+  id:           ${NODE_ID:node-2}
+  zone:         ${NODE_ZONE:zone-b}
+  storage-root: ${NODE_STORAGE_ROOT:/data/dfs/node-2}
+
+---
+# ── Node 3 profile ─────────────────────────────────────────────────────────────
+spring:
+  config:
+    activate:
+      on-profile: node3
+  application:
+    name: dfs-storage-node-3
+
+server:
+  port: ${SERVER_PORT:8083}
+
+node:
+  id:           ${NODE_ID:node-3}
+  zone:         ${NODE_ZONE:zone-c}
+  storage-root: ${NODE_STORAGE_ROOT:/data/dfs/node-3}
