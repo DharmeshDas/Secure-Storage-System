@@ -1,5 +1,7 @@
 package com.dfs.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
@@ -17,6 +19,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode(of = "id")
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class User implements UserDetails {
 
     @Id
@@ -29,6 +32,7 @@ public class User implements UserDetails {
     @Column(nullable = false, unique = true)
     private String email;
 
+    @JsonIgnore
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
@@ -39,7 +43,7 @@ public class User implements UserDetails {
 
     @Column(name = "storage_quota", nullable = false)
     @Builder.Default
-    private Long storageQuota = 10737418240L; // 10 GB
+    private Long storageQuota = 10737418240L;
 
     @Column(name = "storage_used", nullable = false)
     @Builder.Default
@@ -66,29 +70,31 @@ public class User implements UserDetails {
         updatedAt = LocalDateTime.now();
     }
 
-    // --- UserDetails implementation ---
-
     @Override
+    @JsonIgnore
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority(role.name()));
     }
 
     @Override
-    public String getPassword() {
-        return passwordHash;
-    }
+    @JsonIgnore
+    public String getPassword() { return passwordHash; }
 
     @Override
-    public boolean isAccountNonExpired()    { return true; }
+    @JsonIgnore
+    public boolean isAccountNonExpired()     { return true; }
 
     @Override
-    public boolean isAccountNonLocked()     { return isActive; }
+    @JsonIgnore
+    public boolean isAccountNonLocked()      { return isActive; }
 
     @Override
-    public boolean isCredentialsNonExpired(){ return true; }
+    @JsonIgnore
+    public boolean isCredentialsNonExpired() { return true; }
 
     @Override
-    public boolean isEnabled()              { return isActive; }
+    @JsonIgnore
+    public boolean isEnabled()               { return isActive; }
 
     public enum Role {
         ROLE_USER, ROLE_ADMIN

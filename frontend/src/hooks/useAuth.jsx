@@ -8,12 +8,19 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('dfs_token');
-    const saved = localStorage.getItem('dfs_user');
-    if (token && saved) {
-      try { setUser(JSON.parse(saved)); } catch { /* ignore */ }
+    try {
+      const token = localStorage.getItem('dfs_token');
+      const saved = localStorage.getItem('dfs_user');
+      if (token && saved) {
+        const parsed = JSON.parse(saved);
+        setUser(parsed);
+      }
+    } catch (e) {
+      localStorage.removeItem('dfs_token');
+      localStorage.removeItem('dfs_user');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   const login = async (username, password) => {
@@ -39,9 +46,9 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
-      {children}
-    </AuthContext.Provider>
+      <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+        {children}
+      </AuthContext.Provider>
   );
 }
 

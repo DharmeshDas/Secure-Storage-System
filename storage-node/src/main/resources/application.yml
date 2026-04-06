@@ -1,4 +1,4 @@
-# ── Default / Node 1 ──────────────────────────────────────────────────────────
+# ── Default (Node 1) ──────────────────────────────────────────────────────────
 server:
   port: ${SERVER_PORT:8081}
 
@@ -7,33 +7,35 @@ spring:
     name: ${NODE_ID:dfs-storage-node-1}
   servlet:
     multipart:
-      max-file-size: 100MB
-      max-request-size: 100MB
+      max-file-size: 500MB
+      max-request-size: 500MB
+      enabled: true
 
+# NO quotes around the secret — must be plain string to match gateway
 jwt:
   secret: ${JWT_SECRET:dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm}
 
 node:
-  id:            ${NODE_ID:node-1}
-  zone:          ${NODE_ZONE:zone-a}
-  storage-root:  ${NODE_STORAGE_ROOT:/data/dfs/node-1}
-  total-capacity: 1073741824   # 1 GB (Render free disk)
+  id:             ${NODE_ID:node-1}
+  zone:           ${NODE_ZONE:zone-a}
+  storage-root:   ${NODE_STORAGE_ROOT:C:/dfs/node-1}
+  total-capacity: 107374182400
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
-      show-details: never
+      show-details: always
 
 logging:
   level:
-    com.dfs.node: INFO
+    com.dfs.node: DEBUG
 
 ---
-# ── Node 2 profile ─────────────────────────────────────────────────────────────
+# ── Node 2 profile ────────────────────────────────────────────────────────────
 spring:
   config:
     activate:
@@ -42,15 +44,15 @@ spring:
     name: dfs-storage-node-2
 
 server:
-  port: ${SERVER_PORT:8082}
+  port: 8082
 
 node:
-  id:           ${NODE_ID:node-2}
-  zone:         ${NODE_ZONE:zone-b}
-  storage-root: ${NODE_STORAGE_ROOT:/data/dfs/node-2}
+  id:           node-2
+  zone:         zone-b
+  storage-root: ${NODE_STORAGE_ROOT:C:/dfs/node-2}
 
 ---
-# ── Node 3 profile ─────────────────────────────────────────────────────────────
+# ── Node 3 profile ────────────────────────────────────────────────────────────
 spring:
   config:
     activate:
@@ -59,9 +61,9 @@ spring:
     name: dfs-storage-node-3
 
 server:
-  port: ${SERVER_PORT:8083}
+  port: 8083
 
 node:
-  id:           ${NODE_ID:node-3}
-  zone:         ${NODE_ZONE:zone-c}
-  storage-root: ${NODE_STORAGE_ROOT:/data/dfs/node-3}
+  id:           node-3
+  zone:         zone-c
+  storage-root: ${NODE_STORAGE_ROOT:C:/dfs/node-3}

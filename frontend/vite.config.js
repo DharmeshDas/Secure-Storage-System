@@ -9,18 +9,12 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-      },
-      '/oauth2': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/login': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
+      }
+      // ❌ REMOVED:
+      // '/oauth2'
+      // '/login'
     },
   },
-  // In production build, VITE_API_URL is baked in at build time
   define: {
     __API_URL__: JSON.stringify(process.env.VITE_API_URL || 'http://localhost:8080'),
   },

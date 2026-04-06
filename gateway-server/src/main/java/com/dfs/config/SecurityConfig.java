@@ -38,7 +38,6 @@ public class SecurityConfig {
     private final UserRepository       userRepository;
     private final OAuth2SuccessHandler oauth2SuccessHandler;
 
-    // Reads from FRONTEND_URL env var, falls back to localhost for dev
     @Value("${app.cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
 
@@ -73,24 +72,34 @@ public class SecurityConfig {
                                                    JwtAuthenticationFilter jwtAuthFilter)
             throws Exception {
         http
-            .csrf(AbstractHttpConfigurer::disable)
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/actuator/health").permitAll()
-                .requestMatchers("/login/oauth2/**", "/oauth2/**").permitAll()
-                .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                .requestMatchers("/api/nodes/**").hasRole("ADMIN")
-                .anyRequest().authenticated()
-            )
-            .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            )
-            .authenticationProvider(authenticationProvider())
-            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            .oauth2Login(oauth2 -> oauth2
-                .successHandler(oauth2SuccessHandler)
-            );
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers(
+                                "/login/oauth2/**",
+                                "/oauth2/**",
+                                "/oauth2/authorization/**"
+                        ).permitAll()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/api/nodes/**").hasRole("ADMIN")
+                        .anyRequest().authenticated()
+                )
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
+                )
+                .authenticationProvider(authenticationProvider())
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                .oauth2Login(oauth2 -> oauth2
+                        .authorizationEndpoint(auth -> auth
+                                .baseUri("/oauth2/authorization")
+                        )
+                        .redirectionEndpoint(redir -> redir
+                                .baseUri("/login/oauth2/code/*")
+                        )
+                        .successHandler(oauth2SuccessHandler)
+                );
 
         return http.build();
     }
@@ -98,17 +107,16 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        // Support multiple origins separated by comma
         List<String> origins = Arrays.asList(allowedOrigins.split(","));
         configuration.setAllowedOrigins(origins);
         configuration.setAllowedMethods(
-            List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
+                List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/api/**", configuration);
+        source.registerCorsConfiguration("/**", configuration);
         return source;
     }
 }

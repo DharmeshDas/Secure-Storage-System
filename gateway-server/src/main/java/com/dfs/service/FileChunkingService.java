@@ -6,8 +6,12 @@ import com.dfs.model.*;
 import com.dfs.repository.FileChunkRepository;
 import com.dfs.repository.FileMetadataRepository;
 import com.dfs.repository.StorageNodeRepository;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -17,6 +21,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.crypto.SecretKey;
 import java.io.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,45 +29,61 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * FileChunkingService — handles the full lifecycle of chunked file storage:
- *
- *  UPLOAD  → split file into 1 MB chunks → distribute to N nodes (replication)
- *  DOWNLOAD → fetch all chunk primaries (with failover) → reassemble byte stream
- *  DELETE   → soft-delete (mark deleted_at) or hard-delete after 30 days
- *  RESTORE  → clear deleted_at when within retention window
- */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class FileChunkingService {
 
-    private final StorageProperties storageProperties;
-    private final LoadBalancerService loadBalancerService;
+    private final StorageProperties      storageProperties;
+    private final LoadBalancerService    loadBalancerService;
     private final FileMetadataRepository fileMetadataRepository;
-    private final FileChunkRepository fileChunkRepository;
-    private final StorageNodeRepository storageNodeRepository;
-    private final RestTemplate restTemplate;
+    private final FileChunkRepository    fileChunkRepository;
+    private final StorageNodeRepository  storageNodeRepository;
+    private final RestTemplate           restTemplate;
+
+    @Value("${jwt.secret}")
+    private String jwtSecret;
+
+    @Value("${jwt.expiration:86400000}")
+    private long jwtExpiration;
+
+    // ── Internal JWT ──────────────────────────────────────────────────────────
+    private String buildInternalToken() {
+        return Jwts.builder()
+                .subject("gateway-internal")
+                .claim("roles", List.of("ROLE_ADMIN"))
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + jwtExpiration))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
+    private SecretKey getSigningKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(
+                java.util.Base64.getEncoder().encodeToString(jwtSecret.getBytes())
+        );
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    private HttpHeaders jwtHeaders() {
+        HttpHeaders h = new HttpHeaders();
+        h.setBearerAuth(buildInternalToken());
+        return h;
+    }
 
     // ── Upload ────────────────────────────────────────────────────────────────
-
-    /**
-     * Accepts a raw multipart file, chunks it into storageProperties.chunkSizeBytes
-     * pieces, distributes each chunk across replicationFactor nodes, and persists
-     * the metadata.
-     *
-     * @return the saved FileMetadata record (status = COMPLETE on success)
-     */
     @Transactional
-    public FileMetadata uploadFile(MultipartFile file, User owner) throws IOException {
+    public FileMetadata uploadFile(MultipartFile file, com.dfs.model.User owner)
+            throws IOException {
 
-        int chunkSize    = storageProperties.getChunkSizeBytes();
-        int replication  = storageProperties.getReplicationFactor();
-        byte[] content   = file.getBytes();
-        int totalChunks  = (int) Math.ceil((double) content.length / chunkSize);
+        int    chunkSize   = storageProperties.getChunkSizeBytes();
+        int    replication = storageProperties.getReplicationFactor();
+        byte[] content     = file.getBytes();
+        int    totalChunks = (int) Math.ceil((double) content.length / chunkSize);
+        if (totalChunks == 0) totalChunks = 1;
 
-        // Build skeleton metadata
         String storedName = UUID.randomUUID().toString();
+
         FileMetadata metadata = FileMetadata.builder()
                 .owner(owner)
                 .originalName(file.getOriginalFilename())
@@ -80,250 +101,203 @@ public class FileChunkingService {
         try {
             List<FileChunk> allChunks = new ArrayList<>();
 
-            for (int chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-                int start = chunkIndex * chunkSize;
-                int end   = Math.min(start + chunkSize, content.length);
+            for (int i = 0; i < totalChunks; i++) {
+                int    start     = i * chunkSize;
+                int    end       = Math.min(start + chunkSize, content.length);
                 byte[] chunkData = Arrays.copyOfRange(content, start, end);
+                String checksum  = sha256Hex(chunkData);
 
-                String chunkChecksum = sha256Hex(chunkData);
-
-                // Select target nodes for this chunk (zone-aware, least-loaded)
-                List<StorageNode> targetNodes = loadBalancerService
+                List<StorageNode> targets = loadBalancerService
                         .selectNodesForChunk(chunkData.length, replication);
 
-                for (int replica = 0; replica < targetNodes.size(); replica++) {
-                    StorageNode node = targetNodes.get(replica);
-                    boolean isPrimary = (replica == 0);
-
+                for (int r = 0; r < targets.size(); r++) {
+                    StorageNode       node   = targets.get(r);
                     ChunkUploadResult result = uploadChunkToNode(
-                            node, metadata.getStoredName(), chunkIndex, chunkData);
+                            node, storedName, i, chunkData);
 
-                    FileChunk chunk = FileChunk.builder()
+                    allChunks.add(FileChunk.builder()
                             .file(metadata)
                             .nodeId(node.getId())
-                            .chunkOrder(chunkIndex)
+                            .chunkOrder(i)
                             .chunkSize(chunkData.length)
-                            .checksum(chunkChecksum)
-                            .isReplica(!isPrimary)
+                            .checksum(checksum)
+                            .isReplica(r != 0)
                             .storagePath(result.getStoragePath())
-                            .build();
+                            .build());
 
-                    allChunks.add(chunk);
-
-                    // Update used capacity on the node
                     node.setUsedCapacity(node.getUsedCapacity() + chunkData.length);
                     storageNodeRepository.save(node);
                 }
-
-                log.debug("Chunk {}/{} distributed to {} nodes",
-                        chunkIndex + 1, totalChunks, targetNodes.size());
+                log.debug("Chunk {}/{} distributed", i + 1, totalChunks);
             }
 
+            // ── KEY FIX: save chunks first, then update status ────────────────
+            // Do NOT call metadata.setChunks() — this causes the orphan deletion
+            // error because JPA tries to replace the managed collection.
+            // Instead save chunks independently and just update the status.
             fileChunkRepository.saveAll(allChunks);
 
-            // Mark upload complete
+            // Update status and owner usage — reload fresh to avoid stale state
+            metadata = fileMetadataRepository.findById(metadata.getId())
+                    .orElseThrow(() -> new RuntimeException("File metadata lost"));
             metadata.setUploadStatus(FileMetadata.UploadStatus.COMPLETE);
-            metadata.setChunks(allChunks);
-
-            // Update owner storage usage
             owner.setStorageUsed(owner.getStorageUsed() + content.length);
-
             return fileMetadataRepository.save(metadata);
 
         } catch (Exception e) {
-            metadata.setUploadStatus(FileMetadata.UploadStatus.FAILED);
-            fileMetadataRepository.save(metadata);
-            log.error("Upload failed for file {}: {}", storedName, e.getMessage(), e);
+            // Reload and mark failed to avoid stale entity issues
+            fileMetadataRepository.findById(metadata.getId()).ifPresent(m -> {
+                m.setUploadStatus(FileMetadata.UploadStatus.FAILED);
+                fileMetadataRepository.save(m);
+            });
+            log.error("Upload failed: {}", e.getMessage(), e);
             throw new RuntimeException("File upload failed: " + e.getMessage(), e);
         }
     }
 
     // ── Download ──────────────────────────────────────────────────────────────
-
-    /**
-     * Reassembles the full file from its chunks, using failover when a primary
-     * node is unavailable.
-     *
-     * @return raw file bytes in correct order
-     */
     public byte[] downloadFile(FileMetadata metadata) throws IOException {
-        List<FileChunk> allChunks = fileChunkRepository
+        List<FileChunk> all = fileChunkRepository
                 .findByFileOrderByChunkOrder(metadata);
 
-        // Group by chunk_order so we can find replicas quickly
-        Map<Integer, List<FileChunk>> chunksByOrder = allChunks.stream()
+        Map<Integer, List<FileChunk>> byOrder = all.stream()
                 .collect(Collectors.groupingBy(FileChunk::getChunkOrder));
 
-        ByteArrayOutputStream assembledFile = new ByteArrayOutputStream();
-        Set<String> failedNodes = new HashSet<>();
+        ByteArrayOutputStream out    = new ByteArrayOutputStream();
+        Set<String>           failed = new HashSet<>();
 
         for (int i = 0; i < metadata.getTotalChunks(); i++) {
-            List<FileChunk> copies = chunksByOrder.get(i);
-            if (copies == null || copies.isEmpty()) {
-                throw new IOException("Missing chunk at index " + i);
-            }
-
-            byte[] chunkData = fetchChunkWithFailover(copies, failedNodes);
-            assembledFile.write(chunkData);
+            List<FileChunk> copies = byOrder.get(i);
+            if (copies == null || copies.isEmpty())
+                throw new IOException("Missing chunk " + i);
+            out.write(fetchWithFailover(copies, failed));
         }
 
-        byte[] fullFile = assembledFile.toByteArray();
-
-        // Integrity check
-        String actualChecksum = sha256Hex(fullFile);
-        if (!actualChecksum.equals(metadata.getChecksum())) {
-            throw new IOException("File integrity check failed: checksum mismatch");
-        }
-
-        return fullFile;
+        byte[] full = out.toByteArray();
+        if (!sha256Hex(full).equals(metadata.getChecksum()))
+            throw new IOException("File integrity check failed");
+        return full;
     }
 
-    // ── Soft delete & restore ─────────────────────────────────────────────────
-
+    // ── Soft delete / restore / hard delete ───────────────────────────────────
     @Transactional
-    public void softDeleteFile(FileMetadata file) {
-        file.setDeletedAt(LocalDateTime.now());
-        fileMetadataRepository.save(file);
-        log.info("Soft-deleted file {} (recoverable for 30 days)", file.getId());
+    public void softDeleteFile(FileMetadata f) {
+        f.setDeletedAt(LocalDateTime.now());
+        fileMetadataRepository.save(f);
     }
 
     @Transactional
-    public FileMetadata restoreFile(FileMetadata file) {
-        if (!file.isRecoverable()) {
-            throw new IllegalStateException(
-                "File cannot be restored: 30-day retention window has expired");
-        }
-        file.setDeletedAt(null);
-        FileMetadata restored = fileMetadataRepository.save(file);
-        log.info("Restored file {}", file.getId());
-        return restored;
+    public FileMetadata restoreFile(FileMetadata f) {
+        if (!f.isRecoverable())
+            throw new IllegalStateException("30-day window expired");
+        f.setDeletedAt(null);
+        return fileMetadataRepository.save(f);
     }
 
-    /**
-     * Permanently removes a file and all its chunk records from nodes + DB.
-     * Called by the scheduler after the 30-day window, or immediately on
-     * forced hard-delete.
-     */
     @Transactional
-    public void hardDeleteFile(FileMetadata file) {
-        List<FileChunk> chunks = fileChunkRepository.findByFileOrderByChunkOrder(file);
-
-        // Best-effort: delete from each node (ignore errors)
-        chunks.forEach(chunk -> {
-            try {
-                deleteChunkFromNode(chunk);
-            } catch (Exception e) {
-                log.warn("Could not delete chunk {} from node {}: {}",
-                        chunk.getId(), chunk.getNodeId(), e.getMessage());
+    public void hardDeleteFile(FileMetadata f) {
+        fileChunkRepository.findByFileOrderByChunkOrder(f).forEach(c -> {
+            try { deleteChunkFromNode(c); }
+            catch (Exception e) {
+                log.warn("Delete chunk failed: {}", e.getMessage());
             }
         });
-
-        fileMetadataRepository.delete(file);
-        log.info("Hard-deleted file {}", file.getId());
+        fileMetadataRepository.delete(f);
     }
 
-    // ── Chunk-level I/O ───────────────────────────────────────────────────────
-
-    /**
-     * Tries each copy of a chunk (primary first, then replicas) until one succeeds.
-     */
-    private byte[] fetchChunkWithFailover(
-            List<FileChunk> copies, Set<String> failedNodes) throws IOException {
-
-        // Primary first, then replicas
-        List<FileChunk> ordered = copies.stream()
-                .sorted(Comparator.comparing(FileChunk::isReplica))
-                .collect(Collectors.toList());
-
-        for (FileChunk copy : ordered) {
-            if (failedNodes.contains(copy.getNodeId())) continue;
-
-            try {
-                return downloadChunkFromNode(copy);
-            } catch (Exception e) {
-                log.warn("Failed to fetch chunk {} from node {}. Trying next replica. Error: {}",
-                        copy.getChunkOrder(), copy.getNodeId(), e.getMessage());
-                failedNodes.add(copy.getNodeId());
+    // ── Node I/O ──────────────────────────────────────────────────────────────
+    private byte[] fetchWithFailover(List<FileChunk> copies,
+                                     Set<String> failed) throws IOException {
+        copies.sort(Comparator.comparing(FileChunk::isReplica));
+        for (FileChunk c : copies) {
+            if (failed.contains(c.getNodeId())) continue;
+            try { return downloadChunkFromNode(c); }
+            catch (Exception e) {
+                log.warn("Node {} failed chunk {}: {}",
+                        c.getNodeId(), c.getChunkOrder(), e.getMessage());
+                failed.add(c.getNodeId());
             }
         }
-
-        throw new IOException("All replicas failed for chunk order " +
-                ordered.get(0).getChunkOrder());
+        throw new IOException("All replicas failed for chunk "
+                + copies.get(0).getChunkOrder());
     }
 
-    private ChunkUploadResult uploadChunkToNode(
-            StorageNode node, String fileId, int chunkIndex, byte[] chunkData) {
-
-        String url = node.getBaseUrl() + "/api/chunks/upload";
-
-        HttpHeaders headers = new HttpHeaders();
+    private ChunkUploadResult uploadChunkToNode(StorageNode node,
+                                                String fileId,
+                                                int index,
+                                                byte[] data) {
+        HttpHeaders headers = jwtHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        body.add("fileId", fileId);
-        body.add("chunkIndex", String.valueOf(chunkIndex));
-        body.add("chunk", new ByteArrayResource(chunkData) {
+        body.add("fileId",     fileId);
+        body.add("chunkIndex", String.valueOf(index));
+        body.add("chunk", new ByteArrayResource(data) {
             @Override public String getFilename() {
-                return fileId + "_" + chunkIndex;
+                return fileId + "_" + index;
             }
         });
 
-        HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, headers);
-        ResponseEntity<ChunkUploadResult> response = restTemplate.postForEntity(
-                url, request, ChunkUploadResult.class);
+        log.debug("Uploading chunk {} to node {} url {}",
+                index, node.getId(), node.getBaseUrl());
 
-        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-            throw new RuntimeException("Node " + node.getId() + " returned " +
-                    response.getStatusCode() + " for chunk upload");
-        }
+        ResponseEntity<ChunkUploadResult> resp = restTemplate.postForEntity(
+                node.getBaseUrl() + "/api/chunks/upload",
+                new HttpEntity<>(body, headers),
+                ChunkUploadResult.class);
 
-        return response.getBody();
+        if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null)
+            throw new RuntimeException("Node " + node.getId()
+                    + " upload failed: " + resp.getStatusCode());
+
+        return resp.getBody();
     }
 
     private byte[] downloadChunkFromNode(FileChunk chunk) {
         StorageNode node = storageNodeRepository.findById(chunk.getNodeId())
-                .orElseThrow(() -> new RuntimeException("Node not found: " + chunk.getNodeId()));
+                .orElseThrow(() -> new RuntimeException(
+                        "Node not found: " + chunk.getNodeId()));
 
-        if (!node.isAvailable()) {
-            throw new RuntimeException("Node " + chunk.getNodeId() + " is not available");
-        }
+        if (!node.isAvailable())
+            throw new RuntimeException("Node " + chunk.getNodeId() + " unavailable");
 
-        String url = node.getBaseUrl() + "/api/chunks/" + chunk.getId();
-        ResponseEntity<byte[]> response = restTemplate.getForEntity(url, byte[].class);
+        String url = node.getBaseUrl() + "/api/chunks/" + chunk.getId()
+                + "?path=" + chunk.getStoragePath();
 
-        if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-            throw new RuntimeException("Failed to download chunk from node " + chunk.getNodeId());
-        }
+        ResponseEntity<byte[]> resp = restTemplate.exchange(
+                url, HttpMethod.GET,
+                new HttpEntity<>(jwtHeaders()),
+                byte[].class);
 
-        // Verify chunk integrity
-        String actualChecksum = sha256Hex(response.getBody());
-        if (!actualChecksum.equals(chunk.getChecksum())) {
-            throw new RuntimeException("Chunk integrity check failed on node " + chunk.getNodeId());
-        }
+        if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null)
+            throw new RuntimeException("Download failed from " + chunk.getNodeId());
 
-        return response.getBody();
+        if (!sha256Hex(resp.getBody()).equals(chunk.getChecksum()))
+            throw new RuntimeException("Checksum mismatch on " + chunk.getNodeId());
+
+        return resp.getBody();
     }
 
     private void deleteChunkFromNode(FileChunk chunk) {
         StorageNode node = storageNodeRepository.findById(chunk.getNodeId())
-                .orElseThrow(() -> new RuntimeException("Node not found: " + chunk.getNodeId()));
-        String url = node.getBaseUrl() + "/api/chunks/" + chunk.getId();
-        restTemplate.delete(url);
+                .orElseThrow(() -> new RuntimeException(
+                        "Node not found: " + chunk.getNodeId()));
+        String url = node.getBaseUrl() + "/api/chunks/" + chunk.getId()
+                + "?path=" + chunk.getStoragePath();
+        restTemplate.exchange(url, HttpMethod.DELETE,
+                new HttpEntity<>(jwtHeaders()), Void.class);
     }
 
-    // ── Utilities ─────────────────────────────────────────────────────────────
-
+    // ── SHA-256 ───────────────────────────────────────────────────────────────
     public static String sha256Hex(byte[] data) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(data);
             StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
+            for (byte b : hash) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
+            throw new RuntimeException("SHA-256 unavailable", e);
         }
     }
 }

@@ -4,15 +4,24 @@ server:
 spring:
   application:
     name: dfs-gateway
+
+  # ── Multipart upload limits ──────────────────────────────────────────────────
+  servlet:
+    multipart:
+      max-file-size: 500MB
+      max-request-size: 500MB
+      enabled: true
+
   datasource:
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
+    url: ${DB_URL:jdbc:mysql://localhost:3306/dfs_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}
+    username: ${DB_USERNAME:dfs_user}
+    password: ${DB_PASSWORD:dfs_secret}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
+
   jpa:
     hibernate:
       ddl-auto: validate
@@ -20,6 +29,7 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
 
   # ── Google OAuth2 ────────────────────────────────────────────────────────────
   security:
@@ -34,12 +44,12 @@ spring:
               - profile
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
 
-# JWT
+# JWT Configuration
 jwt:
-  secret: ${JWT_SECRET}
+  secret: ${JWT_SECRET:dfs-super-secret-jwt-key-minimum-256-bits-long-for-hs256-algorithm}
   expiration: 86400000
 
-# Storage Nodes — set via env vars on Render
+# Storage Node Registry
 storage:
   nodes:
     - id: "node-1"
@@ -56,25 +66,27 @@ storage:
   health-check-interval: 30000
   node-timeout: 5000
 
+# Soft delete retention
 file:
   soft-delete:
     retention-days: 30
 
-# CORS — allow the deployed frontend URL
+# CORS allowed origins
 app:
   cors:
     allowed-origins: ${FRONTEND_URL:http://localhost:3000}
 
+# Actuator
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
-      show-details: never
+      show-details: always
 
 logging:
   level:
-    com.dfs: INFO
-    org.springframework.security: WARN
+    com.dfs: DEBUG
+    org.springframework.security: INFO

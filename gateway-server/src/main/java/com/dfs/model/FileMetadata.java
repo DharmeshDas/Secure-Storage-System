@@ -1,5 +1,7 @@
 package com.dfs.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -14,12 +16,15 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode(of = "id")
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class FileMetadata {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // Ignore owner in JSON response — prevents Hibernate proxy serialization error
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "owner_id", nullable = false)
     private User owner;
@@ -63,7 +68,9 @@ public class FileMetadata {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @OneToMany(mappedBy = "file", cascade = CascadeType.ALL, orphanRemoval = true)
+    // chunks ignored in JSON — fetched separately when needed
+    @JsonIgnore
+    @OneToMany(mappedBy = "file", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @OrderBy("chunkOrder ASC")
     @Builder.Default
     private List<FileChunk> chunks = new ArrayList<>();
